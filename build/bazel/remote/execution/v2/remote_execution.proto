@@ -2205,6 +2205,37 @@ message ChunkingFunction {
     // min_chunk_size and max_chunk_size are derived from avg_chunk_size (1/4x
     // and 4x respectively).
     FASTCDC_2020 = 1;
+
+    // The MaxCDC chunking algorithm as implemented by buildbarn/go-cdc.
+    // See https://github.com/buildbarn/go-cdc for details.
+    //
+    // MaxCDC is inspired by FastCDC, but instead of placing cutting points at
+    // the first position at which a rolling hash has a given number of zero
+    // bits, it uses the position at which the rolling hash is maximized within
+    // a lookahead window between min_chunk_size_bytes and max_chunk_size_bytes.
+    //
+    // This approach results in a more uniform chunk size distribution compared
+    // to FastCDC, with the spread in chunk size being significantly smaller.
+    // The algorithm is expected to converge more quickly after differing parts
+    // between similar files have finished processing.
+    //
+    // Supported implementations:
+    //   - Go: https://github.com/buildbarn/go-cdc
+    //
+    // Servers which support the MaxCDC chunking algorithm MUST advertise the
+    // following configuration parameters through the CacheCapabilities message:
+    //   - min_chunk_size_bytes
+    //   - max_chunk_size_bytes
+    //
+    // The recommended min_chunk_size_bytes is 262144 (256 KiB).
+    // The recommended max_chunk_size_bytes is 1048576 (1 MiB).
+    // The recommended ratio between max and min is 4x.
+    //
+    // GEAR table: 256 64-bit integers initialized using a Mersenne Twister
+    // (MT19937) random number generator with seed 0:
+    //   twister = MT19937(seed=0)
+    //   GEAR[i] = twister.Uint64() for i in 0..255
+    MAXCDC = 2;
   }
 }
 
@@ -2375,7 +2406,7 @@ message ChunkingConfiguration {
   // the client SHOULD ignore FastCDC chunking function support.
   message FastCDCParams {
     // The average (expected) chunk size for the FastCDC chunking algorithm.
-    // The value MUST be between 1 KiB and 1 MiB. The recommended value is 
+    // The value MUST be between 1 KiB and 1 MiB. The recommended value is
     // 524288 (512 KiB).
     //
     // The minimum chunk size MUST be avg_chunk_size_bytes / 4.
@@ -2388,6 +2419,39 @@ message ChunkingConfiguration {
     // All clients sharing a cache should use the same seed to maximize
     // chunk reuse.
     uint32 seed = 2;
+  }
+
+  // Parameters for the MaxCDC content-defined chunking algorithm.
+  //
+  // Implementations MUST follow the buildbarn/go-cdc reference implementation:
+  // https://github.com/buildbarn/go-cdc
+  //
+  // Key algorithm components:
+  //
+  // GEAR table: 256 64-bit integers initialized using a Mersenne Twister
+  // (MT19937) random number generator with seed 0:
+  //   twister = MT19937(seed=0)
+  //   GEAR[i] = twister.Uint64() for i in 0..255
+  //
+  // The algorithm scans input from min_chunk_size_bytes to max_chunk_size_bytes
+  // and selects the cutting point where the Gear rolling hash is maximized.
+  //
+  // The recommended ratio between max_chunk_size_bytes and min_chunk_size_bytes
+  // is 4x, which has been found optimal for deduplication performance.
+  //
+  // If any of the advertised parameters are not within the expected range,
+  // the client SHOULD ignore MaxCDC chunking function support.
+  message MaxCDCParams {
+    // The minimum chunk size for the MaxCDC chunking algorithm.
+    // The value MUST be at least 64 bytes (the Gear hash window size).
+    // The recommended value is 262144 (256 KiB).
+    uint64 min_chunk_size_bytes = 1;
+
+    // The maximum chunk size for the MaxCDC chunking algorithm.
+    // The value MUST be greater than min_chunk_size_bytes.
+    // The recommended value is 1048576 (1 MiB).
+    // The recommended ratio of max to min is 4x.
+    uint64 max_chunk_size_bytes = 2;
   }
 
   // A list of chunking algorithms that the server supports for splitting and
@@ -2408,6 +2472,9 @@ message ChunkingConfiguration {
 
   // The parameters for the FastCDC chunking algorithm.
   FastCDCParams fastcdc_params = 3;
+
+  // The parameters for the MaxCDC chunking algorithm.
+  MaxCDCParams maxcdc_params = 4;
 }
 
 // Capabilities of the remote execution system.
